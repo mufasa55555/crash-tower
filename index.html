@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Crash Tower</title>
+    <style>
+        body { margin: 0; background: #000; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; font-family: 'Arial Black', sans-serif; color: white; touch-action: none; }
+        #game-container { position: relative; width: 100vw; height: 100vh; max-width: 500px; display: flex; justify-content: center; align-items: center; }
+        canvas { background: #111; border: 2px solid #222; display: block; width: 100%; height: auto; }
+        .overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; background: rgba(0,0,0,0.4); text-align: center; z-index: 20; backdrop-filter: blur(4px); }
+        #hud { position: absolute; top: 5%; width: 100%; pointer-events: none; text-align: center; z-index: 10; display: none; }
+        #frenzy-container { width: 60%; height: 10px; background: rgba(255,255,255,0.2); margin: 10px auto; border-radius: 5px; display: none; overflow: hidden; }
+        #frenzy-timer-bar { width: 100%; height: 100%; background: #fff; box-shadow: 0 0 10px #fff; }
+        
+        button { background: #fff; color: #000; border: none; padding: 15px 35px; font-size: 18px; font-weight: bold; margin: 10px; cursor: pointer; border-radius: 50px; transition: transform 0.2s ease; width: 75%; max-width: 280px;}
+        button:hover { transform: scale(1.08); }
+        
+        /* Styled Reset Button */
+        .reset-btn { background: #ff4757; color: white; font-size: 14px; padding: 10px 25px; }
+
+        #high-score-small { font-size: 14px; opacity: 0.7; }
+        .color-preview { width: 25px; height: 25px; border-radius: 50%; border: 2px solid white; display: inline-block; vertical-align: middle; margin-left: 10px; }
+        #flash { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: white; opacity: 0; pointer-events: none; z-index: 50; }
+        .info-text { font-family: sans-serif; font-size: 14px; line-height: 1.6; padding: 20px; text-align: left; max-width: 80%; background: rgba(34,34,34,0.8); border-radius: 15px; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <div id="flash"></div>
+        <div id="hud">
+            <h1 id="current-score" style="margin:0; font-size: 3rem;">0</h1>
+            <div id="high-score-small">BEST: 0</div>
+            <div id="frenzy-container"><div id="frenzy-timer-bar"></div></div>
+        </div>
+
+        <div id="main-menu" class="overlay">
+            <h1 style="font-size: clamp(2rem, 10vw, 3.5rem); margin-bottom: 5px;">CRASH TOWER</h1>
+            <div id="menu-high-score" style="margin-bottom: 5px; opacity: 0.9;">BEST: 0</div>
+            
+            <!-- Reset button moved between Score and Play -->
+            <button class="reset-btn" onclick="resetHighScore()">RESET BEST</button>
+            
+            <button onclick="startGame()">PLAY</button>
+            <button onclick="cycleColor()">COLOR <div id="color-icon" class="color-preview"></div></button>
+            <button onclick="showInfo()">INFO</button>
+        </div>
+
+        <div id="info-menu" class="overlay" style="display:none">
+            <h2>HOW TO PLAY</h2>
+            <div class="info-text">
+                • <b>A / D</b> to move.<br>
+                • <b>HOLD Space/Mouse</b> to Smash.<br>
+                • Avoid <b>Black Spots</b>.<br>
+                • Smash 5 blocks for <b>FRENZY</b>.<br>
+                • Speed increases every <b>500 pts</b>.<br>
+                • Press <b>ESC</b> to Pause.
+            </div>
+            <button onclick="goToMenu()">BACK</button>
+        </div>
+
+        <div id="pause-menu" class="overlay" style="display:none">
+            <h2>PAUSED</h2>
+            <button onclick="togglePause()">RESUME</button>
+            <button onclick="cycleColor()">CHANGE COLOR</button>
+            <button onclick="goToMenu()">QUIT</button>
+        </div>
+
+        <div id="game-over" class="overlay" style="display:none">
+            <h1 style="color: #ff4757; font-size: 3rem;">GAME OVER</h1>
+            <h2 id="final-score" style="margin: 0;">SCORE: 0</h2>
+            <button onclick="startGame()">TRY AGAIN</button>
+            <button onclick="goToMenu()">MAIN MENU</button>
+        </div>
+
+        <canvas id="gameCanvas"></canvas>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const hud = document.getElementById('hud');
+        const frenzyUI = document.getElementById('frenzy-container');
+        const frenzyBar = document.getElementById('frenzy-timer-bar');
+        const flash = document.getElementById('flash');
+        
+        const GAME_W = 400, GAME_H = 700;
+        canvas.width = GAME_W; canvas.height = GAME_H;
+
+        let state = 'MENU';
+        let score = 0, highScore = localStorage.getItem('crashTowerHighScore') || 0;
+        let isSmashing = false, combo = 0, frenzyTimer = 0, isFrenzy = false;
+        let textureOffset = 0, rotationSpeed = 3.5, lastSpeedUp = 0;
+        let bouncePlatformY = 400; 
+
+        const colors = ['#ff0000', '#00ffff', '#39ff14', '#ff007f', '#ffcc00', '#9d00ff'];
+        let colorIndex = parseInt(localStorage.getItem('crashTowerColorIndex')) || 0;
+        
+        const ball = { x: 200, y: 150, radius: 14, vy: 0, gravity: 0.6, jump: -10, smash: 20 };
+        let stacks = [], particles = [];
+        const keys = { a: false, d: false };
+
+        function initLevel(resetScore = true) {
+            if(resetScore) { score = 0; combo = 0; rotationSpeed = 3.5; lastSpeedUp = 0; }
+            isFrenzy = false; frenzyTimer = 0;
+            ball.y = 150; ball.vy = 0; ball.x = 200;
+            stacks = []; particles = [];
+            frenzyUI.style.display = "none";
+            for (let i = 0; i < 15; i++) stacks.push(createStack(400 + i * 85));
+            bouncePlatformY = stacks.y; 
+            updateScoreUI();
+        }
+
+        function createStack(y) {
+            return { y, broken: false, hue: (0 + y/5)%360, dangerPos: Math.random() * 300 };
+        }
+
+        function startGame() { state = 'PLAYING'; hideOverlays(); hud.style.display = 'block'; initLevel(true); }
+        function hideOverlays() { ['main-menu', 'info-menu', 'pause-menu', 'game-over'].forEach(id => document.getElementById(id).style.display = 'none'); }
+        function showInfo() { hideOverlays(); document.getElementById('info-menu').style.display = 'flex'; }
+        
+        function goToMenu() { 
+            state = 'MENU'; hideOverlays(); 
+            document.getElementById('main-menu').style.display = 'flex'; 
+            hud.style.display = 'none'; 
+            initLevel(true);
+            document.getElementById('menu-high-score').innerText = "BEST: " + highScore; 
+        }
+
+        function resetHighScore() {
+            if (confirm("Are you sure you want to delete your High Score?")) {
+                highScore = 0;
+                localStorage.setItem('crashTowerHighScore', 0);
+                document.getElementById('menu-high-score').innerText = "BEST: 0";
+                updateScoreUI();
+            }
+        }
+
+        function togglePause() {
+            if (state === 'PLAYING') {
+                state = 'PAUSED';
+                let nearestFloor = ball.y + 400; 
+                stacks.forEach(s => { if (!s.broken && s.y > ball.y && s.y < nearestFloor) nearestFloor = s.y; });
+                bouncePlatformY = nearestFloor; 
+                document.getElementById('pause-menu').style.display = 'flex';
+            } else if (state === 'PAUSED') { state = 'PLAYING'; ball.vy = 2; document.getElementById('pause-menu').style.display = 'none'; }
+        }
+
+        function updateScoreUI() {
+            document.getElementById('current-score').innerText = score;
+            document.getElementById('high-score-small').innerText = "BEST: " + (score > highScore ? score : highScore);
+            if (score > 0 && score % 500 === 0 && score !== lastSpeedUp) {
+                rotationSpeed += 1.0; lastSpeedUp = score; flash.style.opacity = "0.3";
+                setTimeout(() => flash.style.opacity = "0", 150);
+            }
+            if (score > highScore) { highScore = score; localStorage.setItem('crashTowerHighScore', highScore); }
+        }
+
+        function update() {
+            textureOffset += rotationSpeed;
+            if (state === 'MENU' || state === 'PAUSED') {
+                ball.vy += ball.gravity; ball.y += ball.vy;
+                const floor = (typeof bouncePlatformY === 'number') ? bouncePlatformY : 400;
+                if (ball.y > floor - 14) { ball.y = floor - 14; ball.vy = ball.jump; }
+                return; 
+            }
+            if (state !== 'PLAYING') return;
+            if (isFrenzy) {
+                frenzyTimer--;
+                frenzyBar.style.width = (frenzyTimer / 300 * 100) + "%";
+                if (frenzyTimer <= 0) { isFrenzy = false; frenzyUI.style.display = "none"; combo = 0; }
+            }
+            if (keys.a) ball.x -= 8; if (keys.d) ball.x += 8;
+            ball.x = Math.max(20, Math.min(380, ball.x));
+            ball.vy = (isSmashing) ? (isFrenzy ? 24 : ball.smash) : ball.vy + ball.gravity;
+            if (!isSmashing) combo = 0;
+            ball.y += ball.vy;
+            particles.forEach((p, index) => { p.x += p.vx; p.y += p.vy; p.life -= 0.03; if (p.life <= 0) particles.splice(index, 1); });
+            stacks.forEach((s, i) => {
+                if (!s.broken && ball.y + 14 > s.y && ball.y - 14 < s.y + 20) {
+                    const currentDangerX = (s.dangerPos + textureOffset) % 400;
+                    const isOverDanger = ball.x > currentDangerX && ball.x < currentDangerX + 100;
+                    if (isOverDanger && !isFrenzy) {
+                        if (isSmashing) {
+                            state = 'GAMEOVER'; document.getElementById('game-over').style.display = 'flex'; hud.style.display = 'none';
+                            document.getElementById('final-score').innerText = "SCORE: " + score;
+                        } else { ball.y = s.y - 14; ball.vy = ball.jump; }
+                    } else if (isSmashing || isFrenzy) {
+                        if (ball.vy > 0) {
+                            s.broken = true; score += isFrenzy ? 20 : 10; updateScoreUI();
+                            for(let j=0; j<12; j++) particles.push({ x: ball.x, y: s.y, vx: (Math.random()-0.5)*10, vy: (Math.random()-0.5)*10, size: Math.random()*8+4, life: 1, color: isOverDanger ? "#000" : `hsl(${s.hue}, 80%, 45%)` });
+                            if (!isFrenzy && isSmashing) { combo++; if (combo >= 5) { isFrenzy = true; frenzyTimer = 300; frenzyUI.style.display = "block"; } }
+                            if (!isSmashing && isFrenzy) { ball.y = s.y - 14; ball.vy = ball.jump; }
+                        }
+                    } else if (ball.vy > 0) { ball.y = s.y - 14; ball.vy = ball.jump; }
+                }
+                if (ball.y > 300) { let d = ball.y - 300; ball.y = 300; stacks.forEach(st => st.y -= d); particles.forEach(p => p.y -= d); }
+                if (s.y < -100) { stacks.splice(i, 1); stacks.push(createStack(stacks[stacks.length-1].y + 85)); }
+            });
+        }
+
+        function draw() {
+            ctx.save(); if (isFrenzy) ctx.translate(Math.random()*6-3, Math.random()*6-3);
+            ctx.clearRect(0, 0, GAME_W, GAME_H);
+            ctx.fillStyle = "#080808"; ctx.fillRect(160, 0, 80, GAME_H);
+            particles.forEach(p => { ctx.globalAlpha = p.life; ctx.fillStyle = p.color; ctx.fillRect(p.x, p.y, p.size, p.size); });
+            ctx.globalAlpha = 1.0;
+            stacks.forEach(s => {
+                if (s.broken) return;
+                ctx.fillStyle = `hsl(${s.hue}, 80%, 45%)`; ctx.fillRect(50, s.y, 300, 25);
+                ctx.save(); ctx.beginPath(); ctx.rect(50, s.y, 300, 25); ctx.clip();
+                ctx.fillStyle = "#000"; let dx = (s.dangerPos + textureOffset) % 400 - 50; 
+                ctx.fillRect(dx + 50, s.y, 100, 25); ctx.fillRect(dx - 350, s.y, 100, 25); ctx.restore();
+            });
+            if (isSmashing || (isFrenzy && ball.vy > 10)) {
+                ctx.fillStyle = isFrenzy ? "white" : colors[colorIndex]; ctx.globalAlpha = 0.3;
+                ctx.fillRect(ball.x - 10, ball.y - 60, 20, 60); ctx.globalAlpha = 1;
+            }
+            ctx.fillStyle = isFrenzy ? "#fff" : colors[colorIndex];
+            if (isFrenzy) { ctx.shadowBlur = 30; ctx.shadowColor = "white"; }
+            ctx.beginPath(); ctx.arc(ball.x, ball.y, 14, 0, Math.PI*2); ctx.fill();
+            ctx.restore();
+        }
+
+        function loop() { update(); draw(); requestAnimationFrame(loop); }
+        function cycleColor() { colorIndex = (colorIndex + 1) % colors.length; localStorage.setItem('crashTowerColorIndex', colorIndex); document.getElementById('color-icon').style.backgroundColor = colors[colorIndex]; }
+
+        window.addEventListener('keydown', e => { 
+            if (e.key === 'Escape') togglePause();
+            if (state === 'PLAYING') { if (e.key === 'a') keys.a = true; if (e.key === 'd') keys.d = true; if (e.code === 'Space') isSmashing = true; }
+        });
+        window.addEventListener('keyup', e => { if (e.key === 'a') keys.a = false; if (e.key === 'd') keys.d = false; if (e.code === 'Space') isSmashing = false; });
+        canvas.addEventListener('mousedown', () => { if(state === 'PLAYING') isSmashing = true; });
+        window.addEventListener('mouseup', () => isSmashing = false);
+        canvas.addEventListener('touchstart', (e) => { e.preventDefault(); if(state !== 'PLAYING') return; const touchX = e.touches.clientX; if (touchX < window.innerWidth / 2) keys.a = true; else keys.d = true; isSmashing = true; });
+        window.addEventListener('touchend', () => { keys.a = false; keys.d = false; isSmashing = false; });
+        
+        initLevel(true);
+        document.getElementById('color-icon').style.backgroundColor = colors[colorIndex];
+        document.getElementById('menu-high-score').innerText = "BEST: " + highScore;
+        loop();
+    </script>
+</body>
+</html>
+
+
